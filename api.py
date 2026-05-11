@@ -46,6 +46,68 @@ def get_db():
     finally:
         db.close()
 
+
+# Endpoint para listar usuarios
+@app.get("/users")
+def list_users(db: Session = Depends(get_db)):
+    users = db.query(UserDB).all()
+    return {
+        "users": [
+            {
+                "user_id": user.user_id,
+                "username": user.username,
+                "buy_history": user.buy_history,
+            }
+            for user in users
+        ]
+    }
+
+
+# Endpoint para obtener un usuario por ID
+@app.get("/users/{id}")
+def get_user(id: int, db: Session = Depends(get_db)):
+    db_user = db.query(UserDB).filter(UserDB.user_id == id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": db_user.user_id,
+        "username": db_user.username,
+        "buy_history": db_user.buy_history,
+    }
+
+
+# Endpoint para listar juegos
+@app.get("/games")
+def list_games(db: Session = Depends(get_db)):
+    games = db.query(GameDB).all()
+    return {
+        "games": [
+            {
+                "game_id": game.game_id,
+                "name": game.name,
+                "rating_avg": game.rating_avg,
+                "no_of_ratings": game.no_of_ratings,
+                "price": game.price,
+            }
+            for game in games
+        ]
+    }
+
+
+# Endpoint para obtener un juego por ID
+@app.get("/games/{id}")
+def get_game(id: int, db: Session = Depends(get_db)):
+    db_game = db.query(GameDB).filter(GameDB.game_id == id).first()
+    if not db_game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    return {
+        "game_id": db_game.game_id,
+        "name": db_game.name,
+        "rating_avg": db_game.rating_avg,
+        "no_of_ratings": db_game.no_of_ratings,
+        "price": db_game.price,
+    }
+
 # Endpoint para crear usuario
 @app.post("/users")
 def create_user(user: User, db: Session = Depends(get_db)):

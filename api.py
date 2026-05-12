@@ -1,5 +1,4 @@
 import pickle
-import os
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Optional
@@ -19,14 +18,12 @@ def train_and_save_model():
     with open(MODEL_PATH, 'wb') as f:
         pickle.dump(svd_model, f)
 
-if os.path.exists(MODEL_PATH):
-    with open(MODEL_PATH, 'rb') as f:
-        svd_model = pickle.load(f)
-else:
-    train_and_save_model()
-
-
 app = FastAPI()
+
+
+@app.on_event("startup")
+def regenerate_model_on_startup():
+    train_and_save_model()
 
 # Modelos para validación de datos
 class User(BaseModel):
@@ -47,17 +44,38 @@ def get_db():
         db.close()
 
 
+def serialize_user(user: UserDB, ratings_by_user: dict[int, list[dict]]) -> dict:
+    return {
+        "user_id": user.user_id,
+        "username": user.username,
+        "buy_history": user.buy_history,
+        "ratings": ratings_by_user.get(user.user_id, []),
+    }
+
+
 # Endpoint para listar usuarios
 @app.get("/users")
 def list_users(db: Session = Depends(get_db)):
     users = db.query(UserDB).all()
+    ratings = (
+        db.query(RatingDB, GameDB.name)
+        .join(GameDB, GameDB.game_id == RatingDB.game_id)
+        .all()
+    )
+
+    ratings_by_user: dict[int, list[dict]] = {}
+    for rating, game_name in ratings:
+        ratings_by_user.setdefault(rating.user_id, []).append(
+            {
+                "game_id": rating.game_id,
+                "game_name": game_name,
+                "rating": rating.rating,
+            }
+        )
+
     return {
         "users": [
-            {
-                "user_id": user.user_id,
-                "username": user.username,
-                "buy_history": user.buy_history,
-            }
+            serialize_user(user, ratings_by_user)
             for user in users
         ]
     }
@@ -69,11 +87,25 @@ def get_user(id: int, db: Session = Depends(get_db)):
     db_user = db.query(UserDB).filter(UserDB.user_id == id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
-    return {
-        "user_id": db_user.user_id,
-        "username": db_user.username,
-        "buy_history": db_user.buy_history,
+
+    ratings = (
+        db.query(RatingDB, GameDB.name)
+        .join(GameDB, GameDB.game_id == RatingDB.game_id)
+        .filter(RatingDB.user_id == id)
+        .all()
+    )
+    ratings_by_user = {
+        id: [
+            {
+                "game_id": rating.game_id,
+                "game_name": game_name,
+                "rating": rating.rating,
+            }
+            for rating, game_name in ratings
+        ]
     }
+
+    return serialize_user(db_user, ratings_by_user)
 
 
 # Endpoint para listar juegos
@@ -145,19 +177,23 @@ def recommend(id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
     
     # Contar cuántos ratings ha hecho el usuario
-    num_ratings = db.query(RatingDB).filter(RatingDB.user_id == id).count()
+    user_ratings = db.query(RatingDB).filter(RatingDB.user_id == id).all()
+    num_ratings = len(user_ratings)
+    rated_game_ids = {rating.game_id for rating in user_ratings}
     
     # Verificar historial de compras para excluir juegos ya comprados
     buy_history_ids = set()
     if db_user.buy_history and db_user.buy_history.strip():
         buy_history_ids = set(map(int, db_user.buy_history.split(',')))
+
+    excluded_game_ids = buy_history_ids | rated_game_ids
     
     # COLD START: Si tiene menos ratings que el threshold
     if num_ratings < COLD_START_THRESHOLD:
         # Excluir juegos comprados si tiene historial
         query = db.query(GameDB)
-        if buy_history_ids:
-            query = query.filter(~GameDB.game_id.in_(buy_history_ids))
+        if excluded_game_ids:
+            query = query.filter(~GameDB.game_id.in_(excluded_game_ids))
         
         games = query.order_by(
             GameDB.rating_avg.desc().nullslast()
@@ -179,8 +215,8 @@ def recommend(id: int, db: Session = Depends(get_db)):
     # Usuario con suficiente historial de ratings (>= COLD_START_THRESHOLD)
     # Obtener juegos no comprados por el usuario
     unbought_games = db.query(GameDB).filter(
-        ~GameDB.game_id.in_(buy_history_ids)
-    ).all() if buy_history_ids else db.query(GameDB).all()
+        ~GameDB.game_id.in_(excluded_game_ids)
+    ).all() if excluded_game_ids else db.query(GameDB).all()
     
     # Si hay modelo entrenado, predecir ratings para juegos no comprados
     if svd_model is not None:
@@ -205,8 +241,8 @@ def recommend(id: int, db: Session = Depends(get_db)):
     
     # Fallback: si no hay modelo, usar rating promedio (excluyendo comprados)
     query = db.query(GameDB)
-    if buy_history_ids:
-        query = query.filter(~GameDB.game_id.in_(buy_history_ids))
+    if excluded_game_ids:
+        query = query.filter(~GameDB.game_id.in_(excluded_game_ids))
     
     games = query.order_by(
         GameDB.rating_avg.desc().nullslast()

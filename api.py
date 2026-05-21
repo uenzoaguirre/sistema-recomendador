@@ -166,7 +166,7 @@ def update_user(id: int, user: User, db: Session = Depends(get_db)):
 
 
 # Constante para el threshold de cold start (basado en ratings)
-COLD_START_THRESHOLD = 7  # Mínimo de ratings para usar filtrado colaborativo
+COLD_START_THRESHOLD = 4 # Mínimo de ratings para usar filtrado colaborativo
 
 # Endpoint para obtener recomendaciones
 @app.get("/users/{id}/recommend")
@@ -206,7 +206,6 @@ def recommend(id: int, db: Session = Depends(get_db)):
                     "name": g.name, 
                     "rating_avg": g.rating_avg,
                     "method": "cold_start",
-                    "user_ratings_count": num_ratings
                 } 
                 for g in games
             ]
@@ -233,7 +232,6 @@ def recommend(id: int, db: Session = Depends(get_db)):
                     "name": g.name, 
                     "pred_rating": est,
                     "method": "collaborative_filtering",
-                    "user_ratings_count": num_ratings
                 }
                 for g, est in recommendations
             ]
